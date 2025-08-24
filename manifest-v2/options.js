@@ -1,278 +1,138 @@
+// === Options (MV2) for Like/View % overlay ===
+
 const DEFAULT_USER_SETTINGS = {
-  barPosition: 'bottom',
-  barColor: 'blue-gray',
-  barLikesColor: '#3095e3',
-  barDislikesColor: '#cfcfcf',
-  barColorsSeparator: false,
-  barHeight: 4,
-  barOpacity: 100,
-  barSeparator: false,
-  useExponentialScaling: false,
-  barTooltip: true,
-  useOnVideoPage: false,
-  showPercentage: false,
-  cacheDuration: 600000,
+  showPercentage: true,
+  colorizePercent: true,
+  decimals: 2,           // 0..3
+  cacheDuration: 600000, // 10 minutes
+  apiKey: ""             // YouTube Data API key
+};
+
+// Helpers
+function pctString(r, decimals) {
+  const v = Math.max(0, Math.min(100, (r ?? 0) * 100));
+  return v.toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  }) + "%";
 }
 
-function sanitizeHexColor(str) {
-  return str.replace(/[^#0-9a-zA-Z]/g, '')
+function updatePreviewFromForm() {
+  const show = $("#show-percentage").prop("checked");
+  const colorize = $("#colorize-percent").prop("checked");
+  const decimals = Math.min(3, Math.max(0, Number($("#decimals").val() || 0)));
+
+  // Sample numbers from your example
+  const likes = 100;
+  const views = 13050;
+  const rating = views > 0 ? likes / views : 0;
+
+  const $meta = $("#preview-metadata");
+  const $chip = $("#preview-percent");
+
+  if ($meta.length) {
+    $meta.find(".yt-core-attributed-string").text(
+      `${likes.toLocaleString()} likes / ${views.toLocaleString()} views`
+    );
+  }
+
+  if (!$chip.length) return;
+
+  if (!show) {
+    $chip.hide();
+    return;
+  }
+
+  $chip.show().text(pctString(rating, decimals));
+
+  if (colorize) {
+    // Similar color mapping as content-script
+    const clamped = Math.min(Math.max(rating, 0), 1);
+    const r = Math.round((1 - clamped) * 1275);
+    let g = clamped * 637.5 - 255;
+    const color = `rgb(${r},${Math.round(g)},0)`;
+    $chip.css("color", color);
+  } else {
+    $chip.css("color", "");
+  }
 }
 
-function getCssLink(url) {
-  return $('<link/>', {
-    rel: 'stylesheet',
-    type: 'text/css',
-    class: 'ytrb-css',
-    href: chrome.runtime.getURL(url)
-  })
-}
+// Wire field changes to preview
+$("#show-percentage, #colorize-percent").on("change", updatePreviewFromForm);
+$("#decimals").on("input change", updatePreviewFromForm);
 
-function updateCss() {
-  $('head').children('.ytrb-css').remove()
-  if ($('#bar-height').val() !== '0') {
-    $('head').append(getCssLink('css/bar.css'))
+// Save settings
+$("#save-btn").click(function () {
+  const cacheDuration = parseInt($('[name="cache-duration"]').val() || "600000", 10);
 
-    if ($('#bar-position-top').prop('checked')) {
-      $('head').append(getCssLink('css/bar-top.css'))
-    } else {
-      $('head').append(getCssLink('css/bar-bottom.css'))
+  const settings = {
+    showPercentage: $("#show-percentage").prop("checked"),
+    colorizePercent: $("#colorize-percent").prop("checked"),
+    decimals: Math.min(3, Math.max(0, Number($("#decimals").val() || 0))),
+    cacheDuration,
+    apiKey: ($("#api-key").val() || "").trim()
+  };
+
+  chrome.storage.sync.set(settings, function () {
+    const toast = document.querySelector("#toast");
+    if (toast && toast.MaterialSnackbar) {
+      toast.MaterialSnackbar.showSnackbar({
+        message: "Settings saved. Refresh YouTube.",
+        timeout: 2000
+      });
     }
+  });
 
-    if ($('#bar-separator').prop('checked')) {
-      if ($('#bar-position-top').prop('checked')) {
-        $('head').append(getCssLink('css/bar-top-separator.css'))
-      } else {
-        $('head').append(getCssLink('css/bar-bottom-separator.css'))
-      }
-    }
-
-    if ($('#bar-tooltip').prop('checked')) {
-      $('head').append(getCssLink('css/bar-tooltip.css'))
-      if ($('#bar-position-top').prop('checked')) {
-        $('head').append(getCssLink('css/bar-top-tooltip.css'))
-      } else {
-        $('head').append(getCssLink('css/bar-bottom-tooltip.css'))
-      }
-    }
-
-  }
-}
-
-// Watch for changes that require updating the CSS.
-$('#bar-position-top, #bar-position-bottom, #bar-color-blue-gray, #bar-color-green-red, ' +
-  '#bar-separator, #bar-tooltip').change(updateCss)
-
-// Watch bar position.
-function updateSeparatorPosition() {
-  $('#bar-separator-position').text($('#bar-position-top').prop('checked') ? 'below' : 'above')
-}
-$('#bar-position-top').on('change', updateSeparatorPosition)
-$('#bar-position-bottom').on('change', updateSeparatorPosition)
-
-// Watch bar color selector.
-$('#bar-color').on('input change', function(event) {
-  $('#custom-colors-options').toggle($('[name="bar-color"]').val() === 'custom-colors')
-  if ($('[name="bar-color"]').val() === 'blue-gray') {
-    document.documentElement.style.setProperty('--ytrb-bar-likes-color', '#3095e3')
-    document.documentElement.style.setProperty('--ytrb-bar-dislikes-color', '#cfcfcf')
-    document.documentElement.style.setProperty('--ytrb-bar-dislikes-shadow', 'none')
-  } else if ($('[name="bar-color"]').val() === 'green-red') {
-    document.documentElement.style.setProperty('--ytrb-bar-likes-color', '#060')
-    document.documentElement.style.setProperty('--ytrb-bar-dislikes-color', '#c00')
-    document.documentElement.style.setProperty('--ytrb-bar-dislikes-shadow', 'inset 1px 0 #fff')
-  } else if ($('[name="bar-color"]').val() === 'custom-colors') {
-    document.documentElement.style.setProperty(
-      '--ytrb-bar-likes-color',
-      sanitizeHexColor($('#bar-likes-color').val())
-    )
-    document.documentElement.style.setProperty(
-      '--ytrb-bar-dislikes-color',
-      sanitizeHexColor($('#bar-dislikes-color').val())
-    )
-    document.documentElement.style.setProperty(
-      '--ytrb-bar-dislikes-shadow',
-      $('#bar-colors-separator').prop('checked') ? 'inset 1px 0 #fff' : 'none'
-    )
-  }
-})
-$('#bar-likes-color').on('input change', function(event) {
-  if ($('[name="bar-color"]').val() === 'custom-colors') {
-    document.documentElement.style.setProperty(
-      '--ytrb-bar-likes-color',
-      sanitizeHexColor($('#bar-likes-color').val())
-    )
-  }
-})
-$('#bar-dislikes-color').on('input change', function(event) {
-  if ($('[name="bar-color"]').val() === 'custom-colors') {
-    document.documentElement.style.setProperty(
-      '--ytrb-bar-dislikes-color',
-      sanitizeHexColor($('#bar-dislikes-color').val())
-    )
-  }
-})
-$('#bar-colors-separator').on('input change', function(event) {
-  if ($('[name="bar-color"]').val() === 'custom-colors') {
-    document.documentElement.style.setProperty(
-      '--ytrb-bar-dislikes-shadow',
-      $('#bar-colors-separator').prop('checked') ? 'inset 1px 0 #fff' : 'none'
-    )
-  }
-})
-
-// Watch height slider.
-$('#bar-height').on('input change', function(event) {
-  $('#bar-height-text').text($('#bar-height').val() === '0' ? 'Hidden' : $('#bar-height').val() + ' px')
-
-  // Make the slider bubble move with the handle.
-  $('#bar-height-text').css('left', ($('#bar-height').val() / 16 * 210) + 'px')
-
-  document.documentElement.style.setProperty('--ytrb-bar-height', $('#bar-height').val() + 'px')
-})
-
-// Watch opacity slider.
-$('#bar-opacity').on('input change', function(event) {
-  $('#bar-opacity-text').text($('#bar-opacity').val() + '%')
-
-  // Make the slider bubble move with the handle.
-  $('#bar-opacity-text').css('left', ($('#bar-opacity').val() / 100 * 210) + 'px')
-
-  // Temporarily disable the transition when updating the opacity.
-  $('#thumbnail-preview ytrb-bar').css('transition', 'none')
-  document.documentElement.style.setProperty('--ytrb-bar-opacity', $('#bar-opacity').val() / 100)
-  setTimeout(function () {
-    $('#thumbnail-preview ytrb-bar').css('transition', 'opacity 0.2s ease-out 0.2s')
-  })
-})
-
-// Save settings.
-$('#save-btn').click(function() {
-  let cacheDuration = parseInt($('[name="cache-duration"]').val())
-  chrome.storage.local.set({
-    barPosition: $('#bar-position-top').prop('checked') ? 'top' : 'bottom',
-    barColor: $('[name="bar-color"]').val(),
-    barLikesColor: sanitizeHexColor($('#bar-likes-color').val()),
-    barDislikesColor: sanitizeHexColor($('#bar-dislikes-color').val()),
-    barColorsSeparator: $('#bar-colors-separator').prop('checked'),
-    barHeight: Number($('#bar-height').val()),
-    barOpacity: Number($('#bar-opacity').val()),
-    barSeparator: $('#bar-separator').prop('checked'),
-    useExponentialScaling: $('#use-exponential-scaling').prop('checked'),
-    barTooltip: $('#bar-tooltip').prop('checked'),
-    useOnVideoPage: $('#use-on-video-page').prop('checked'),
-    showPercentage: $('#show-percentage').prop('checked'),
-    cacheDuration: cacheDuration,
-  }, function() {
-    // Show "Settings saved" message.
-    document.querySelector('#toast').MaterialSnackbar.showSnackbar({
-      message: 'Settings saved. Refresh the page.',
-      timeout: 2000,
-    })
-  })
+  // Tell background to apply runtime values immediately
   chrome.runtime.sendMessage({
-    query: 'updateSettings',
-    cacheDuration: cacheDuration,
-  })
-})
+    query: "updateSettings",
+    cacheDuration,
+    apiKey: settings.apiKey
+  });
+});
 
-function applySettings(settings, applyColors=true) {
-  $('#bar-position-' + settings.barPosition).click()
+// Restore defaults button
+$("#restore-defaults-btn").click(function () {
+  applySettings(DEFAULT_USER_SETTINGS);
+});
 
-  // Note: We don't restore the custom colors and colors separator settings so
-  // that users can easily restore to their custom colors if they want to.
-  if (applyColors) {
-    $('#bar-likes-color').val(settings.barLikesColor)
-    if (settings.barLikesColor.length) {
-      $('#bar-likes-color-container').removeClass('is-invalid').addClass('is-dirty')
-    }
-    $('#bar-dislikes-color').val(settings.barDislikesColor)
-    if (settings.barDislikesColor.length) {
-      $('#bar-dislikes-color-container').removeClass('is-invalid').addClass('is-dirty')
-    }
-    let barColorsSeparator = $('#bar-colors-separator')
-    if (barColorsSeparator.prop('checked') !== settings.barColorsSeparator) {
-      barColorsSeparator.click()
-    }
+// Apply settings to the form and preview
+function applySettings(s) {
+  $("#show-percentage").prop("checked", !!s.showPercentage);
+  $("#colorize-percent").prop("checked", !!s.colorizePercent);
+
+  $("#decimals").val(Number.isFinite(s.decimals) ? s.decimals : 2);
+  if ($("#decimals").val() !== "") {
+    $("#decimals").parent().addClass("is-dirty");
   }
 
-  // We set the bar color after setting the custom colors and colors
-  // separator option above so that the update triggers get fired properly.
-  $('#bar-color-' + settings.barColor).click()
+  $("#api-key").val(s.apiKey || "");
+  if (s.apiKey) $("#api-key").parent().addClass("is-dirty");
 
-  let barHeightSlider = $('#bar-height')[0].MaterialSlider
-  if (barHeightSlider) {
-    barHeightSlider.change(settings.barHeight)
-  }
-  $('#bar-height').change()
+  // Set cache duration dropdown
+  const id = `#cache-duration-${(s.cacheDuration ?? 600000).toString()}`;
+  if ($(id).length) $(id).click();
 
-  let barOpacitySlider = $('#bar-opacity')[0].MaterialSlider
-  if (barOpacitySlider) {
-    barOpacitySlider.change(settings.barOpacity)
-  }
-  $('#bar-opacity').change()
-
-  if ($('#bar-separator').prop('checked') !== settings.barSeparator) {
-    $('#bar-separator').click()
-  }
-  if ($('#use-exponential-scaling').prop('checked') !== settings.useExponentialScaling) {
-    $('#use-exponential-scaling').click()
-  }
-  if ($('#bar-tooltip').prop('checked') !== settings.barTooltip) {
-    $('#bar-tooltip').click()
-  }
-  if ($('#use-on-video-page').prop('checked') !== settings.useOnVideoPage) {
-    $('#use-on-video-page').click()
-  }
-  if ($('#show-percentage').prop('checked') !== settings.showPercentage) {
-    $('#show-percentage').click()
-  }
-  if (parseInt($('[name="cache-duration"]').val()) !== settings.cacheDuration) {
-    $('#cache-duration-' + settings.cacheDuration.toString()).click()
-  }
+  updatePreviewFromForm();
 }
 
-// Restore defaults.
-$('#restore-defaults-btn').click(function() {
-  // Note: We don't restore the custom colors and colors separator settings so
-  // that users can easily restore to their custom colors if they want to.
-  applySettings(DEFAULT_USER_SETTINGS, false)
-})
-
-// Load saved settings.
+// Load saved settings
 function restoreOptions() {
-  chrome.storage.local.get(DEFAULT_USER_SETTINGS, function(settings) {
-    // In Firefox, `settings` will be undeclared if not previously set.
-    if (!settings) {
-      settings = DEFAULT_USER_SETTINGS
+  chrome.storage.sync.get(DEFAULT_USER_SETTINGS, function (settings) {
+    if (!settings) settings = DEFAULT_USER_SETTINGS;
+
+    // Backfill any missing keys
+    for (const [k, v] of Object.entries(DEFAULT_USER_SETTINGS)) {
+      if (!(k in settings)) settings[k] = v;
     }
 
-    // Set any missing settings to their default values. Some settings may be
-    // missing if loading in settings that were saved using an older version of
-    // this extension.
-    for (const [key, value] of Object.entries(DEFAULT_USER_SETTINGS)) {
-      if (!(key in settings)) {
-        settings[key] = value
-      }
-    }
-
-    applySettings(settings)
-  })
+    applySettings(settings);
+  });
 }
 
-document.addEventListener('DOMContentLoaded', function() {
-  // We restore option twice in case the first time is before the Material
-  // Design components are loaded. (This is a temporary workaround until a
-  // better method is figured out.)
-  restoreOptions()
-  setTimeout(function () {
-    updateCss()
-  })
-
-  // We use the delay timeout to give the MDL components time to load.
-  setTimeout(function () {
-    restoreOptions()
-    setTimeout(function () {
-      updateCss()
-    })
-  }, 250)
-})
+document.addEventListener("DOMContentLoaded", function () {
+  // Initial restore
+  restoreOptions();
+  // Re-run after MDL upgrades components
+  setTimeout(restoreOptions, 200);
+});

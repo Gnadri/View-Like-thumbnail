@@ -1,96 +1,54 @@
-// All API requests are made through this background script to avoid CORB
-// errors and to cache results.
+// === background.js ===
+// Minimal service worker fetching {likes, views} for a videoId via YouTube Data API v3.
 
-let cache = {}
-let cacheTimes = []
-let cacheDuration = 600000 // Default is 10 mins.
-let getLikesDataCallbacks = {}
+const API_KEY = "<PUT_YOUR_YOUTUBE_DATA_API_KEY_HERE>"; // get from Google Cloud Console
+const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const cache = new Map(); // { videoId: { t: timestamp, likes, views } }
 
-function removeExpiredCacheData() {
-  const now = Date.now()
-  let numRemoved = 0
-
-  for (const [fetchTime, videoId] of cacheTimes) {
-    if (now - fetchTime > cacheDuration) {
-      delete cache[videoId]
-      numRemoved++
-    } else {
-      break
-    }
+async function fetchStats(videoId) {
+  const now = Date.now();
+  const cached = cache.get(videoId);
+  if (cached && now - cached.t < CACHE_TTL_MS) {
+    return { likes: cached.likes, views: cached.views };
   }
 
-  if (numRemoved > 0) {
-    cacheTimes = cacheTimes.slice(numRemoved)
-  }
+  const url = `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${encodeURIComponent(
+    videoId
+  )}&key=${API_KEY}`;
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`YouTube API error: ${res.status}`);
+  const data = await res.json();
+
+  const item = data.items && data.items[0];
+  if (!item || !item.statistics) throw new Error("No statistics found");
+
+  const likes = Number(item.statistics.likeCount || 0);
+  const views = Number(item.statistics.viewCount || 0);
+
+  cache.set(videoId, { t: now, likes, views });
+  return { likes, views };
 }
 
-chrome.storage.local.get({ cacheDuration: 600000 }, function (settings) {
-  if (settings && settings.cacheDuration !== undefined) {
-    cacheDuration = settings.cacheDuration
-  }
-})
-
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  switch (message.query) {
-    case "getLikesData":
-      removeExpiredCacheData()
-
-      // If the data is in the cache, return it.
-      if (message.videoId in cache) {
-        // Return the cached data if it exists.
-        sendResponse(cache[message.videoId])
-        return
-      }
-
-      if (message.videoId in getLikesDataCallbacks) {
-        // If a request for the same video ID is already in progress, add the
-        // current `sendResponse` function to the `getLikesDataCallbacks`
-        // array for this video ID.
-        getLikesDataCallbacks[message.videoId].push(sendResponse)
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  (async () => {
+    try {
+      if (msg.query === "insertCss" && Array.isArray(msg.files)) {
+        // Inject CSS into the active tab
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        for (const file of msg.files) {
+          await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: [file] });
+        }
+        sendResponse(true);
+      } else if (msg.query === "getStats" && msg.videoId) {
+        const stats = await fetchStats(msg.videoId);
+        sendResponse(stats);
       } else {
-        // Otherwise, insert a new callbacks array for this video ID, then
-        // start a new request to fetch the likes/dislikes data.
-        getLikesDataCallbacks[message.videoId] = [sendResponse]
-
-        fetch(
-          "https://returnyoutubedislikeapi.com/Votes?videoId=" +
-            message.videoId,
-        )
-          .then(
-            (response) =>
-              response.ok
-                ? response.json().then((data) => ({
-                    likes: data.likes,
-                    dislikes: data.dislikes,
-                  }))
-                : null, // If the response failed, we return `null`.
-          )
-          .then((data) => {
-            if (data !== null) {
-              cache[message.videoId] = data
-              cacheTimes.push([Date.now(), message.videoId])
-            }
-
-            for (const callback of getLikesDataCallbacks[message.videoId]) {
-              callback(data)
-            }
-
-            delete getLikesDataCallbacks[message.videoId]
-          })
+        sendResponse(null);
       }
-
-      // Returning `true` signals to the browser that we will send our
-      // response asynchronously using `sendResponse()`.
-      return true
-
-    case "insertCss":
-      for (const file of message.files) {
-        chrome.tabs.insertCSS(sender.tab.id, { file })
-      }
-      break
-
-    case "updateSettings":
-      cacheDuration = message.cacheDuration
-      break
-  }
-})
+    } catch (_e) {
+      sendResponse(null);
+    }
+  })();
+  return true; // keep the message channel open for async sendResponse
+});

@@ -1,101 +1,129 @@
 // All API requests are made through this background script to avoid CORB
-// errors and to cache results.
+// errors and to cache results. Now we fetch {likes, views} from YouTube Data API.
 
-let cache = {}
-let cacheTimes = []
-let cacheDuration = 600000 // Default is 10 mins.
-let getLikesDataCallbacks = {}
+let cache = {};
+let cacheTimes = [];
+let cacheDuration = 600000; // 10 minutes default
+let getStatsCallbacks = {}; // coalesce concurrent requests per videoId
+
+// Put your API key here, or save it into chrome.storage.sync as "ytApiKey".
+let API_KEY = "<PUT_YOUR_YOUTUBE_DATA_API_KEY_HERE>";
 
 function removeExpiredCacheData() {
-  const now = Date.now()
-  let numRemoved = 0
+  const now = Date.now();
+  let numRemoved = 0;
 
   for (const [fetchTime, videoId] of cacheTimes) {
     if (now - fetchTime > cacheDuration) {
-      delete cache[videoId]
-      numRemoved++
+      delete cache[videoId];
+      numRemoved++;
     } else {
-      break
+      break;
     }
   }
-
-  if (numRemoved > 0) {
-    cacheTimes = cacheTimes.slice(numRemoved)
-  }
+  if (numRemoved > 0) cacheTimes = cacheTimes.slice(numRemoved);
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.sync.get({ cacheDuration: 600000 }, function (settings) {
-    if (settings && settings.cacheDuration !== undefined) {
-      cacheDuration = settings.cacheDuration
-    }
-  })
-})
+  chrome.storage.sync.get({ cacheDuration: 600000, ytApiKey: null }, (settings) => {
+    if (settings && settings.cacheDuration !== undefined) cacheDuration = settings.cacheDuration;
+    if (settings && settings.ytApiKey) API_KEY = settings.ytApiKey;
+  });
+});
+
+async function fetchStatsFromApi(videoId) {
+  if (!API_KEY || API_KEY.includes("<PUT_")) {
+    // No key configured -> fail gracefully
+    return null;
+  }
+  const url =
+    `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${encodeURIComponent(videoId)}&key=${API_KEY}`;
+
+  const res = await fetch(url);
+  if (!res.ok) return null;
+
+  const data = await res.json();
+  const item = data.items && data.items[0];
+  if (!item || !item.statistics) return null;
+
+  const likes = Number(item.statistics.likeCount || 0);
+  const views = Number(item.statistics.viewCount || 0);
+  return { likes, views };
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.query) {
-    case "getLikesData":
-      removeExpiredCacheData()
+    case "getStats": {
+      removeExpiredCacheData();
 
-      // If the data is in the cache, return it.
+      // Return cached if present
       if (message.videoId in cache) {
-        // Return the cached data if it exists.
-        sendResponse(cache[message.videoId])
-        return
+        sendResponse(cache[message.videoId]);
+        return true; // async path compatible
       }
 
-      if (message.videoId in getLikesDataCallbacks) {
-        // If a request for the same video ID is already in progress, add the
-        // current `sendResponse` function to the `getLikesDataCallbacks`
-        // array for this video ID.
-        getLikesDataCallbacks[message.videoId].push(sendResponse)
+      // Coalesce concurrent lookups
+      if (message.videoId in getStatsCallbacks) {
+        getStatsCallbacks[message.videoId].push(sendResponse);
       } else {
-        // Otherwise, insert a new callbacks array for this video ID, then
-        // start a new request to fetch the likes/dislikes data.
-        getLikesDataCallbacks[message.videoId] = [sendResponse]
+        getStatsCallbacks[message.videoId] = [sendResponse];
 
-        fetch(
-          "https://returnyoutubedislikeapi.com/Votes?videoId=" +
-            message.videoId,
-        )
-          .then(
-            (response) =>
-              response.ok
-                ? response.json().then((data) => ({
-                    likes: data.likes,
-                    dislikes: data.dislikes,
-                  }))
-                : null, // If the response failed, we return `null`.
-          )
-          .then((data) => {
+        (async () => {
+          let data = null;
+          try {
+            data = await fetchStatsFromApi(message.videoId);
             if (data !== null) {
-              cache[message.videoId] = data
-              cacheTimes.push([Date.now(), message.videoId])
+              cache[message.videoId] = data;
+              cacheTimes.push([Date.now(), message.videoId]);
             }
+          } catch (_e) {
+            data = null;
+          }
 
-            for (const callback of getLikesDataCallbacks[message.videoId]) {
-              callback(data)
-            }
-
-            delete getLikesDataCallbacks[message.videoId]
-          })
+          for (const cb of getStatsCallbacks[message.videoId]) cb(data);
+          delete getStatsCallbacks[message.videoId];
+        })();
       }
 
-      // Returning `true` signals to the browser that we will send our
-      // response asynchronously using `sendResponse()`.
-      return true
+      return true; // we'll respond async
+    }
 
-    case "insertCss":
-      chrome.scripting.insertCSS({
-        target: {
-          tabId: sender.tab.id,
-        },
-        files: message.files,
-      })
-      break
+    // Back-compat: if something still sends "getLikesData", answer with stats too.
+    case "getLikesData": {
+      message.query = "getStats";
+      chrome.runtime.sendMessage(message, sendResponse);
+      return true;
+    }
 
-    case "updateSettings":
-      cacheDuration = message.cacheDuration
-      break
+    case "insertCss": {
+      // Requires "scripting" permission in manifest
+      if (sender.tab && sender.tab.id) {
+        (async () => {
+          for (const file of message.files || []) {
+            await chrome.scripting.insertCSS({
+              target: { tabId: sender.tab.id },
+              files: [file],
+            });
+          }
+          sendResponse(true);
+        })();
+        return true;
+      }
+      sendResponse(false);
+      break;
+    }
+
+    case "updateSettings": {
+      if (typeof message.cacheDuration === "number") cacheDuration = message.cacheDuration;
+      if (typeof message.apiKey === "string") {
+        API_KEY = message.apiKey;
+        chrome.storage.sync.set({ ytApiKey: API_KEY });
+      }
+      sendResponse(true);
+      break;
+    }
+
+    default:
+      sendResponse(null);
   }
-})
+});
