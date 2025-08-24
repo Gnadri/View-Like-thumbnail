@@ -49,12 +49,13 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function getVideoDataObject(likes, dislikes) {
-  const total = likes + dislikes
+function getVideoDataObject(likes, views) {
+  const total = views
   const rating = total ? likes / total : null
   return {
     likes: likes,
-    dislikes: dislikes,
+    views: views,
+    dislikes: Math.max(total - likes, 0),
     total: total,
     rating: rating,
   }
@@ -68,7 +69,7 @@ async function getVideoDataFromApi(videoId) {
     })
 
     if (likesData !== null) {
-      return getVideoDataObject(likesData.likes, likesData.dislikes)
+      return getVideoDataObject(likesData.likes, likesData.views)
     }
 
     await sleep(
@@ -98,12 +99,12 @@ function getToolTipHtml(videoData) {
   return (
     videoData.likes.toLocaleString() +
     "&nbsp;/&nbsp;" +
-    videoData.dislikes.toLocaleString() +
+    videoData.views.toLocaleString() +
     " &nbsp;&nbsp; " +
     ratingToPercentageString(videoData.rating) +
     " &nbsp;&nbsp; " +
     videoData.total.toLocaleString() +
-    "&nbsp;total"
+    "&nbsp;views"
   )
 }
 
@@ -374,17 +375,9 @@ async function processNewThumbnail(thumbnailElement, thumbnailUrl) {
     addRatingBar(thumbnailElement, videoData)
   }
 
-  // We only add the rating percentage if the user has enabled it, the video has
-  // a rating (rating will only be null if the video has no likes or dislikes),
-  // and if the video creator has not disabled showing like counts for that
-  // video (videos with 0 likes and 10+ dislikes probably mean the creator has
-  // disabled showing like counts for that video, see:
-  // https://github.com/elliotwaite/thumbnail-rating-bar-for-youtube/issues/83).
-  if (
-    userSettings.showPercentage &&
-    videoData.rating != null &&
-    !(videoData.likes === 0 && videoData.dislikes >= 10)
-  ) {
+  // We only add the rating percentage if the user has enabled it and the video
+  // has a rating (rating will only be null if the video has no views).
+  if (userSettings.showPercentage && videoData.rating != null) {
     addRatingPercentage(thumbnailElement, videoData)
   }
 }
@@ -431,130 +424,6 @@ function processNewThumbnails() {
   }
 }
 
-// The `NUMBERING_SYSTEM_DIGIT_STRINGS` constant below was generated using this
-// code:
-//
-//   // The list of all possible numbering systems can be found here:
-//   // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/DateTimeFormat/DateTimeFormat#parameters):
-//   const numberingSystems = [
-//     "arab", "arabext", "bali", "beng", "deva", "fullwide", "gujr", "guru",
-//     "hanidec", "khmr", "knda", "laoo", "latn", "limb", "mlym", "mong",
-//     "mymr", "orya", "tamldec", "telu", "thai", "tibt",
-//   ]
-//   const digitStrings = []
-//   for (const numberingSystem of numberingSystems) {
-//     let digitString = ""
-//     for (let i = 0; i < 10; i++) {
-//       digitString += i.toLocaleString("en-US-u-nu-" + numberingSystem)
-//     }
-//     digitStrings.push(digitString)
-//   }
-//   console.log(
-//     "const NUMBERING_SYSTEM_DIGIT_STRINGS = [" +
-//       digitStrings.map((s) => '\n  "' + s + '",').join("") +
-//       "\n]",
-//   )
-//
-const NUMBERING_SYSTEM_DIGIT_STRINGS = [
-  "٠١٢٣٤٥٦٧٨٩",
-  "۰۱۲۳۴۵۶۷۸۹",
-  "᭐᭑᭒᭓᭔᭕᭖᭗᭘᭙",
-  "০১২৩৪৫৬৭৮৯",
-  "०१२३४५६७८९",
-  "０１２３４５６７８９",
-  "૦૧૨૩૪૫૬૭૮૯",
-  "੦੧੨੩੪੫੬੭੮੯",
-  "〇一二三四五六七八九",
-  "០១២៣៤៥៦៧៨៩",
-  "೦೧೨೩೪೫೬೭೮೯",
-  "໐໑໒໓໔໕໖໗໘໙",
-  "0123456789",
-  "᥆᥇᥈᥉᥊᥋᥌᥍᥎᥏",
-  "൦൧൨൩൪൫൬൭൮൯",
-  "᠐᠑᠒᠓᠔᠕᠖᠗᠘᠙",
-  "၀၁၂၃၄၅၆၇၈၉",
-  "୦୧୨୩୪୫୬୭୮୯",
-  "௦௧௨௩௪௫௬௭௮௯",
-  "౦౧౨౩౪౫౬౭౮౯",
-  "๐๑๒๓๔๕๖๗๘๙",
-  "༠༡༢༣༤༥༦༧༨༩",
-]
-
-function parseInternationalInt(string) {
-  // Parses an internationalized integer string (e.g. "1,234" or "١٬٢٣٤") into a
-  // JavaScript integer.
-  string = string.replace(/[\s,.]/g, "")
-
-  if (/[^0-9]/.test(string)) {
-    let newString = ""
-    for (const char of string) {
-      for (const digitString of NUMBERING_SYSTEM_DIGIT_STRINGS) {
-        const index = digitString.indexOf(char)
-        if (index !== -1) {
-          newString += index
-          break
-        }
-      }
-    }
-    string = newString
-  }
-
-  return parseInt(string, 10)
-}
-
-// This function parses the Return YouTube Dislike tooltip text (see:
-// https://github.com/Anarios/return-youtube-dislike/blob/main/Extensions/combined/src/bar.js#L33).
-// Currently, this function does not support the case where the user has set
-// their Return YouTube Dislike tooltip setting to "only_like" (only show the
-// likes count) or "only_dislike" (only show the dislikes count). In those
-// cases, this function will return null and the tooltip and rating bar will not
-// be updated. Support for those options could potentially be added in the
-// future by having this function fall back to retrieving the rating from the
-// API when it can't compute the rating using only the tooltip text.
-function getVideoDataFromTooltipText(text) {
-  let match = text.match(/^([^\/]+)\/([^-]+)(-|$)/)
-  if (match && match.length >= 4) {
-    const likes = parseInternationalInt(match[1])
-    const dislikes = parseInternationalInt(match[2])
-    return getVideoDataObject(likes, dislikes)
-  }
-  return null
-}
-
-function updateVideoRatingBar() {
-  for (const rydTooltip of document.querySelectorAll(".ryd-tooltip")) {
-    const tooltip = rydTooltip.querySelector("#tooltip")
-    if (!tooltip) continue
-
-    const curText = tooltip.textContent
-
-    // We add a zero-width space to the end of any processed tooltip text to
-    // prevent it from being reprocessed.
-    if (!curText.endsWith("\u200b")) {
-      const videoData = getVideoDataFromTooltipText(curText)
-      if (!videoData) continue
-
-      if (userSettings.barTooltip) {
-        tooltip.textContent =
-          `${curText} \u00A0\u00A0 ` +
-          `${ratingToPercentageString(videoData.rating ?? 0)} \u00A0\u00A0 ` +
-          `${videoData.total.toLocaleString()} total\u200b`
-      } else {
-        tooltip.textContent = `${curText}\u200b`
-      }
-
-      if (userSettings.useExponentialScaling && videoData.rating) {
-        const rydBar = rydTooltip.querySelector("#ryd-bar")
-        if (rydBar) {
-          rydBar.style.width = `${exponentialRatingWidthPercentage(
-            videoData.rating,
-          )}%`
-        }
-      }
-    }
-  }
-}
-
 // Handles when the DOM is mutated, which is when we search for items that
 // should be modified. However, we throttle these searches to not over tax the
 // CPU.
@@ -570,9 +439,6 @@ function handleDomMutations() {
     // Run the updates.
     if (userSettings.barHeight !== 0 || userSettings.showPercentage) {
       processNewThumbnails()
-    }
-    if (userSettings.barTooltip || userSettings.useExponentialScaling) {
-      updateVideoRatingBar()
     }
 
     hasUnseenDomMutations = false

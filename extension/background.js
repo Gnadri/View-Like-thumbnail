@@ -51,7 +51,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         getLikesDataCallbacks[message.videoId].push(sendResponse)
       } else {
         // Otherwise, insert a new callbacks array for this video ID, then
-        // start a new request to fetch the likes/dislikes data.
+        // start a new request to fetch the likes and view count data.
         getLikesDataCallbacks[message.videoId] = [sendResponse]
 
         fetch(
@@ -63,7 +63,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               response.ok
                 ? response.json().then((data) => ({
                     likes: data.likes,
-                    dislikes: data.dislikes,
+                    views: data.viewCount,
                   }))
                 : null, // If the response failed, we return `null`.
           )

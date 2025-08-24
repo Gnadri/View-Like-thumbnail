@@ -5,7 +5,7 @@
 
 </div>
 
-This extension adds a likes/dislikes rating bar to the bottom of every YouTube video thumbnail, so you can find higher quality content and avoid getting clickbaited.
+This extension adds a likes/views rating bar to the bottom of every YouTube video thumbnail, so you can find higher quality content and avoid getting clickbaited.
 
 ## Install
 
@@ -21,7 +21,7 @@ https://microsoftedge.microsoft.com/addons/detail/thumbnail-rating-bar-for-/mgle
 ## The API
 
 This extension uses the [Return YouTube
-Dislike](https://returnyoutubedislike.com) API for likes/dislikes data.
+Dislike](https://returnyoutubedislike.com) API for likes and view count data.
 
 If you would also like to see the likes/dislikes rating bar that used to be
 available on each video page, you can also install [their
