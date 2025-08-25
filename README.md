@@ -1,5 +1,5 @@
 <div align="center"> <img src="extension/icons/icon128.png" width="128" />
-Like/View % on YouTube™ Thumbnails
+
 </div>
 
 Tiny extension that shows a Like ÷ View percentage on each YouTube thumbnail so you can spot videos that punch above their views and dodge fluff.
