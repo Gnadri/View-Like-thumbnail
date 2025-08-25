@@ -21,13 +21,18 @@ const IS_YOUTUBE_KIDS_SITE = window.location.href.startsWith("https://www.youtub
 const IS_USING_DARK_THEME =
   getComputedStyle(document.body).getPropertyValue("--yt-spec-general-background-a") === " #181818";
 
-// Minimal user settings. Keep showPercentage; bar settings removed.
+// User settings (kept minimal for this overlay)
 const DEFAULT_USER_SETTINGS = {
-  showPercentage: true,        // append like/view % to metadata line
-  colorizePercent: true        // greenish when higher, muted when lower
+  showPercentage: true,     // append like/view % to metadata line
+  colorizePercent: true,    // greenish when higher, muted when lower
+  decimals: 2               // 0..3
 };
 
-let userSettings = DEFAULT_USER_SETTINGS;
+let userSettings = { ...DEFAULT_USER_SETTINGS };
+
+// --- tiny debug logger ---
+const DEBUG = false;
+function dlog(...a) { if (DEBUG) console.log("[LV]", ...a); }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -36,7 +41,7 @@ function sleep(ms) {
 // --- Data fetch & shaping (LIKE/VIEW ONLY) ---
 
 function getVideoDataObject(likes, views) {
-  const rating = views > 0 ? likes / views : null; // 0..1, null if unknown
+  const rating = views > 0 ? likes / views : 0; // 0..1 (treat 0 views as 0%)
   return { likes, views, rating };
 }
 
@@ -64,33 +69,105 @@ async function getVideoDataFromApi(videoId) {
 
 // --- Formatting ---
 
-function ratingToPercentageString(rating) {
-  // rating is 0..1. Display with two decimals; clamp 100% nicely.
+function formatPercent(rating, decimals) {
   if (rating === 1) return "100%";
+  const d = Math.max(0, Math.min(3, Number(decimals ?? 2)));
+  const mult = Math.pow(10, d);
+  const pct = Math.floor((rating ?? 0) * 100 * mult) / mult; // floor to avoid 99.999 -> 100.00%
+  return pct.toLocaleString(undefined, {
+    minimumFractionDigits: d,
+    maximumFractionDigits: d
+  }) + "%";
+}
+
+// Emoji thresholds (percent):
+// 💎  >= 13
+// 😎  8–12.99
+// 😐  3–7.99
+// 🗑️  1–2.99
+// 💩  < 1
+function emojiForRatio(rating) {
+  const pct = (rating ?? 0) * 100;
+  if (pct >= 13) return "💎";
+  if (pct >= 8)  return "😎";
+  if (pct >= 3)  return "😐";
+  if (pct >= 1)  return "🗑️";
+  return "💩";
+}
+
+// --- SIMPLE BADGE OVERLAY (top-left) ---
+
+function getThumbHost(el) {
   return (
-    (Math.floor(rating * 1000) / 10).toLocaleString(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    }) + "%"
+    el.closest("ytd-thumbnail") ||
+    el.closest("ytd-rich-grid-media") ||
+    el.parentElement
   );
 }
 
-function getToolTipHtml(videoData) {
-  // Optional helper if you later add a tooltip; safe to leave here.
-  return (
-    `${videoData.likes.toLocaleString()} likes / ` +
-    `${videoData.views.toLocaleString()} views ` +
-    `&nbsp;&nbsp; ${ratingToPercentageString(videoData.rating)}`
-  );
+function getOrCreateBadge(host) {
+  if (!host) return null;
+
+  // Ensure we can absolutely-position inside
+  const pos = getComputedStyle(host).position;
+  if (pos === "static") host.style.position = "relative";
+
+  let badge = host.querySelector(".lv-badge");
+  if (!badge) {
+    badge = document.createElement("div");
+    badge.className = "lv-badge";
+    Object.assign(badge.style, {
+      position: "absolute",
+      left: "4px",
+      top: "4px",
+      padding: "2px 6px",
+      borderRadius: "4px",
+      fontSize: "11px",
+      fontWeight: "700",
+      background: "rgba(0,0,0,0.80)",
+      color: "#fff",
+      zIndex: "1000",
+      pointerEvents: "none",
+      lineHeight: "1.3",
+      textShadow: "0 1px 1px rgba(0,0,0,0.4)"
+    });
+    host.appendChild(badge);
+  }
+  return badge;
 }
+
+/**
+ * state: "loading" | "ok" | "err"
+ */
+function setBadge(el, text, state = "ok") {
+  const host = getThumbHost(el);
+  const badge = getOrCreateBadge(host);
+  if (!badge) return;
+
+  badge.textContent = text;
+  badge.removeAttribute("title"); // no hover details anymore
+
+  // Subtle background hue by state
+  if (state === "loading") {
+    badge.style.background = "rgba(255, 193, 7, 0.90)";   // amber
+    badge.style.color = "#000";
+  } else if (state === "err") {
+    badge.style.background = "rgba(183, 28, 28, 0.90)";   // deep red
+    badge.style.color = "#fff";
+  } else {
+    badge.style.background = "rgba(0,0,0,0.80)";          // normal
+    badge.style.color = "#fff";
+  }
+}
+
+// --- Metadata percentage chip (optional) ---
 
 function getRatingPercentageElement(videoData) {
   const span = document.createElement("span");
   span.role = "text";
 
-  const textNode = document.createTextNode(
-    ratingToPercentageString(videoData.rating ?? 0)
-  );
+  const txt = `${formatPercent(videoData.rating, userSettings.decimals)} ${emojiForRatio(videoData.rating)}`;
+  const textNode = document.createTextNode(txt);
 
   if (!userSettings.colorizePercent || !Number.isFinite(videoData.rating)) {
     span.appendChild(textNode);
@@ -110,8 +187,6 @@ function getRatingPercentageElement(videoData) {
 
   return span;
 }
-
-// --- Metadata placement ---
 
 function removeOldPercentages(element) {
   element.querySelectorAll(".ytrb-percentage").forEach((n) => n.remove());
@@ -140,6 +215,8 @@ const METADATA_LINE_DATA_MOBILE = [
 ];
 
 function addRatingPercentage(thumbnailElement, videoData) {
+  if (!userSettings.showPercentage) return;
+
   const configs = IS_MOBILE_SITE ? METADATA_LINE_DATA_MOBILE : METADATA_LINE_DATA_DESKTOP;
 
   for (const [containerSelector, metadataLineSelector, metadataLineItemClasses] of configs) {
@@ -162,6 +239,7 @@ function addRatingPercentage(thumbnailElement, videoData) {
 
 async function processNewThumbnail(thumbnailElement, thumbnailUrl) {
   const parts = thumbnailUrl.split("/");
+
   // Skip chapter thumbs: hqdefault_*.jpg but not hqdefault_custom_*.jpg
   const filenameAndParams = parts[5];
   if (filenameAndParams &&
@@ -171,17 +249,28 @@ async function processNewThumbnail(thumbnailElement, thumbnailUrl) {
   }
 
   const videoId = parts[4];
+  if (!videoId) return;
+
+  // Show a tiny "loading" badge immediately so we can see we're running
+  setBadge(thumbnailElement, "…", "loading");
+
   const videoData = await getVideoDataFromApi(videoId);
 
   if (!videoData) {
+    // Keep a red badge so failures are obvious
+    setBadge(thumbnailElement, "err", "err");
     // Mark unprocessed so we can try again on next pass
     thumbnailElement.removeAttribute(PROCESSED_DATA_ATTRIBUTE_NAME);
     return;
   }
 
-  if (userSettings.showPercentage && videoData.rating != null) {
-    addRatingPercentage(thumbnailElement, videoData);
-  }
+  // Compute percentage + emoji and display only that
+  const pct = formatPercent(videoData.rating, userSettings.decimals);
+  const emoji = emojiForRatio(videoData.rating);
+  setBadge(thumbnailElement, `${pct} ${emoji}`, "ok");
+
+  // Also add the metadata-line percentage chip if enabled
+  addRatingPercentage(thumbnailElement, videoData);
 }
 
 function processNewThumbnails() {
@@ -201,8 +290,8 @@ function processNewThumbnails() {
   for (const div of unprocessedDivs) {
     div.setAttribute(PROCESSED_DATA_ATTRIBUTE_NAME, "");
     const bg = div.style.backgroundImage;             // url("https://i.ytimg.com/vi/<id>/...")
-    const src = bg.slice(5, -2);                      // strip url(" .. ")
-    processNewThumbnail(div, src);
+    const src = bg && bg.startsWith('url("') ? bg.slice(5, -2) : "";
+    if (src) processNewThumbnail(div, src);
   }
 }
 
@@ -216,7 +305,7 @@ function handleDomMutations() {
 
   domMutationsAreThrottled = true;
 
-  if (userSettings.showPercentage) processNewThumbnails();
+  processNewThumbnails();
 
   hasUnseenDomMutations = false;
 
@@ -233,7 +322,7 @@ chrome.storage.sync.get(DEFAULT_USER_SETTINGS, (stored) => {
 
   if (IS_YOUTUBE_KIDS_SITE) userSettings.showPercentage = false;
 
-  // Inject minimal CSS for the metadata percentage (if your extension has it).
+  // Inject minimal CSS for the metadata percentage chip (optional).
   if (userSettings.showPercentage) {
     chrome.runtime.sendMessage({
       query: "insertCss",

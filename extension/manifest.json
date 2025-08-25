@@ -14,12 +14,20 @@
     "default_popup": "options.html"
   },
   "options_ui": {
-    "page": "options.html",
-    "browser_style": false
+    "page": "options.html"
   },
   "background": {
     "service_worker": "background.js"
   },
+  "permissions": [
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "*://*.youtube.com/*",
+    "*://*.youtubekids.com/*",
+    "https://www.googleapis.com/*"
+  ],
   "content_scripts": [
     {
       "matches": [
@@ -33,18 +41,10 @@
       "run_at": "document_end"
     }
   ],
-  "permissions": [
-    "storage"
-  ],
-  "host_permissions": [
-    "*://*.youtube.com/*",
-    "*://*.youtubekids.com/*",
-    "https://www.googleapis.com/*"
-  ],
   "web_accessible_resources": [
     {
       "resources": ["css/text-percentage.css"],
-      "matches": ["*://*/*"]
+      "matches": ["*://*.youtube.com/*", "*://*.youtubekids.com/*"]
     }
   ]
 }

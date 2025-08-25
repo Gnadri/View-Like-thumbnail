@@ -1,129 +1,111 @@
-// All API requests are made through this background script to avoid CORB
-// errors and to cache results. Now we fetch {likes, views} from YouTube Data API.
+// background.js (MV3 service worker) — with extra logs & a ping
 
-let cache = {};
-let cacheTimes = [];
-let cacheDuration = 600000; // 10 minutes default
-let getStatsCallbacks = {}; // coalesce concurrent requests per videoId
+let cache = new Map();           // videoId -> {likes, views, t}
+let cacheDuration = 600000;      // 10 min default
+let apiKey = "";                 // set via chrome.storage.sync { apiKey: "..." }
 
-// Put your API key here, or save it into chrome.storage.sync as "ytApiKey".
-let API_KEY = "<PUT_YOUR_YOUTUBE_DATA_API_KEY_HERE>";
-
-function removeExpiredCacheData() {
-  const now = Date.now();
-  let numRemoved = 0;
-
-  for (const [fetchTime, videoId] of cacheTimes) {
-    if (now - fetchTime > cacheDuration) {
-      delete cache[videoId];
-      numRemoved++;
-    } else {
-      break;
-    }
-  }
-  if (numRemoved > 0) cacheTimes = cacheTimes.slice(numRemoved);
-}
-
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.sync.get({ cacheDuration: 600000, ytApiKey: null }, (settings) => {
-    if (settings && settings.cacheDuration !== undefined) cacheDuration = settings.cacheDuration;
-    if (settings && settings.ytApiKey) API_KEY = settings.ytApiKey;
-  });
+// --- startup logging
+console.log("[BG] service worker loaded", new Date().toISOString());
+chrome.runtime.onInstalled.addListener((details) => {
+  console.log("[BG] onInstalled:", details.reason);
+});
+chrome.runtime.onStartup?.addListener(() => {
+  console.log("[BG] onStartup fired");
 });
 
-async function fetchStatsFromApi(videoId) {
-  if (!API_KEY || API_KEY.includes("<PUT_")) {
-    // No key configured -> fail gracefully
+// Load settings on worker start (not just onInstalled)
+chrome.storage.sync.get({ cacheDuration: 600000, apiKey: "" }, (s) => {
+  cacheDuration = s.cacheDuration ?? 600000;
+  apiKey = s.apiKey ?? "";
+  console.log("[BG] settings loaded:", { cacheDuration, hasApiKey: !!apiKey });
+});
+
+async function fetchStats(videoId) {
+  const now = Date.now();
+  const hit = cache.get(videoId);
+  if (hit && (now - hit.t) < cacheDuration) {
+    console.log("[BG] cache hit", videoId, hit);
+    return { likes: hit.likes, views: hit.views };
+  }
+
+  if (!apiKey) {
+    console.warn("[BG] no API key set (chrome.storage.sync.apiKey)");
     return null;
   }
+
   const url =
-    `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${encodeURIComponent(videoId)}&key=${API_KEY}`;
+    `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${encodeURIComponent(videoId)}&key=${apiKey}`;
+  console.log("[BG] fetching:", url);
 
-  const res = await fetch(url);
-  if (!res.ok) return null;
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (e) {
+    console.error("[BG] fetch error:", e);
+    return null;
+  }
+  if (!res.ok) {
+    console.error("[BG] fetch not ok:", res.status, res.statusText);
+    return null;
+  }
 
-  const data = await res.json();
-  const item = data.items && data.items[0];
-  if (!item || !item.statistics) return null;
+  let json;
+  try { json = await res.json(); }
+  catch (e) { console.error("[BG] json error:", e); return null; }
 
-  const likes = Number(item.statistics.likeCount || 0);
-  const views = Number(item.statistics.viewCount || 0);
+  const stats = json?.items?.[0]?.statistics;
+  if (!stats) {
+    console.warn("[BG] no stats in response:", json);
+    return null;
+  }
+
+  const likes = Number(stats.likeCount ?? 0);
+  const views = Number(stats.viewCount ?? 0);
+  cache.set(videoId, { likes, views, t: now });
+  console.log("[BG] fetched stats:", videoId, { likes, views });
   return { likes, views };
 }
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  switch (message.query) {
-    case "getStats": {
-      removeExpiredCacheData();
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // quick ping for diagnostics
+  if (msg.query === "ping") {
+    console.log("[BG] ping from", sender?.tab?.id ?? "n/a");
+    sendResponse({ pong: true, ts: Date.now() });
+    return; // no async
+  }
 
-      // Return cached if present
-      if (message.videoId in cache) {
-        sendResponse(cache[message.videoId]);
-        return true; // async path compatible
+  if (msg.query === "getStats" && msg.videoId) {
+    (async () => {
+      try {
+        const data = await fetchStats(msg.videoId);
+        sendResponse(data); // can be null on failure
+      } catch (e) {
+        console.error("[BG] getStats error:", e);
+        sendResponse(null);
       }
+    })();
+    return true; // keep channel open for async
+  }
 
-      // Coalesce concurrent lookups
-      if (message.videoId in getStatsCallbacks) {
-        getStatsCallbacks[message.videoId].push(sendResponse);
-      } else {
-        getStatsCallbacks[message.videoId] = [sendResponse];
-
-        (async () => {
-          let data = null;
-          try {
-            data = await fetchStatsFromApi(message.videoId);
-            if (data !== null) {
-              cache[message.videoId] = data;
-              cacheTimes.push([Date.now(), message.videoId]);
-            }
-          } catch (_e) {
-            data = null;
-          }
-
-          for (const cb of getStatsCallbacks[message.videoId]) cb(data);
-          delete getStatsCallbacks[message.videoId];
-        })();
+  if (msg.query === "insertCss" && Array.isArray(msg.files)) {
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        for (const file of msg.files) {
+          await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: [file] });
+        }
+        sendResponse(true);
+      } catch (e) {
+        console.error("[BG] insertCss error:", e);
+        sendResponse(false);
       }
+    })();
+    return true;
+  }
 
-      return true; // we'll respond async
-    }
-
-    // Back-compat: if something still sends "getLikesData", answer with stats too.
-    case "getLikesData": {
-      message.query = "getStats";
-      chrome.runtime.sendMessage(message, sendResponse);
-      return true;
-    }
-
-    case "insertCss": {
-      // Requires "scripting" permission in manifest
-      if (sender.tab && sender.tab.id) {
-        (async () => {
-          for (const file of message.files || []) {
-            await chrome.scripting.insertCSS({
-              target: { tabId: sender.tab.id },
-              files: [file],
-            });
-          }
-          sendResponse(true);
-        })();
-        return true;
-      }
-      sendResponse(false);
-      break;
-    }
-
-    case "updateSettings": {
-      if (typeof message.cacheDuration === "number") cacheDuration = message.cacheDuration;
-      if (typeof message.apiKey === "string") {
-        API_KEY = message.apiKey;
-        chrome.storage.sync.set({ ytApiKey: API_KEY });
-      }
-      sendResponse(true);
-      break;
-    }
-
-    default:
-      sendResponse(null);
+  if (msg.query === "updateSettings") {
+    if (typeof msg.cacheDuration === "number") cacheDuration = msg.cacheDuration;
+    if (typeof msg.apiKey === "string") apiKey = msg.apiKey.trim();
+    console.log("[BG] settings updated:", { cacheDuration, hasApiKey: !!apiKey });
   }
 });

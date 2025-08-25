@@ -3,9 +3,9 @@
 const DEFAULT_USER_SETTINGS = {
   showPercentage: true,
   colorizePercent: true,
-  decimals: 2,          // 0..3
+  decimals: 2,           // 0..3
   cacheDuration: 600000, // 10 minutes
-  apiKey: ""            // YouTube Data API key
+  apiKey: ""             // YouTube Data API key
 };
 
 // Helpers
@@ -94,7 +94,7 @@ function applySettings(s) {
   $("#colorize-percent").prop("checked", !!s.colorizePercent);
 
   $("#decimals").val(Number.isFinite(s.decimals) ? s.decimals : 2);
-  if ($("#decimals").val()) {
+  if ($("#decimals").val() !== "") {
     $("#decimals").parent().addClass("is-dirty");
   }
 
