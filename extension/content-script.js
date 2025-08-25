@@ -88,7 +88,7 @@ function formatPercent(rating, decimals) {
 // 💩  < 1
 function emojiForRatio(rating) {
   const pct = (rating ?? 0) * 100;
-  if (pct >= 13) return "💎";
+  if (pct >= 12) return "💎";
   if (pct >= 8)  return "😎";
   if (pct >= 3)  return "😐";
   if (pct >= 1)  return "🗑️";
